@@ -22,6 +22,11 @@
   (let [decoder (Base64/getDecoder)]
     (.decode decoder b64string)))
 
+(defn- get-public-key
+  [node-id]
+  (let [properties (nodes/get-properties conn node-id)]
+    (b64decode (:public-key properties))))
+
 (defn add-entrypoint
   "Adds an entrypoint node to the graph. Returns the node, or an error"
   [password]
@@ -38,12 +43,15 @@
 (defn add-node
   "Adds a non-entrypoint node to the graph. Returns the node, or an error"
   [parent-id]
-  (errors/not-yet-implemented))
-; Get the public key of the parent
-; Generate a key pair
-; Encrypt the private key with the public key of the parent
-; Save a node with the public key on it
-; Save a relationship from the parent to this node with the encrypted private key on it
+  (let [parent (nodes/get conn parent-id)
+        parent-public-key (get-public-key parent-id)
+        keypair (generate-key-pair)
+        private-key (:private-key keypair)
+        public-key (:public-key keypair)
+        encrypted-private-key (key-encrypt-key private-key parent-public-key)
+        new-node (nodes/create conn {:public-key (b64encode public-key)})
+        new-rel (rels/create conn parent new-node "can-decrypt" {:encrypted-private-key (b64encode encrypted-private-key)})]
+    new-node))
 
 (defn grant-access
   "Grants access to an existing node. Returns true if access was granted, or an error"
@@ -62,8 +70,7 @@
 (defn store
   "Stores some data encrypted on a node. Returns true if the data was stored, or an error"
   [id key value]
-  (let [properties (nodes/get-properties conn id)
-        public-key (b64decode (:public-key properties))
+  (let [public-key (get-public-key id)
         encrypted-data (encrypt public-key value)]
     (nodes/set-property conn id key encrypted-data)))
 

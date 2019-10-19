@@ -1,32 +1,39 @@
 (ns kms2-clj.service
   "Functions for the full service."
-  (:require [kms2-clj.errors :as errors])
-  (:import (com.google.crypto.tink KeysetHandle)
-           (com.google.crypto.tink.hybrid HybridKeyTemplates)
-           (javax.crypto.spec PBEKeySpec)
-           (javax.crypto SecretKeyFactory)
-           (com.google.crypto.tink.subtle AesGcmJce)))
+  (:require [kms2-clj.errors :as errors]
+            [kms2-clj.crypto :refer :all]
+            [crypto.random :as random]
+            [clojurewerkz.neocons.rest :as nc]
+            [clojurewerkz.neocons.rest.nodes :as nodes]
+            [clojurewerkz.neocons.rest.relationships :as rels])
+  (:import (java.util Base64)))
 
-(defn- get-plain-private-key
-  "Gets and decrypts the private key of node with id. Returns the private key, or an error"
-  [id entrypoint secret]
-  (errors/not-yet-implemented))
-; Find the shortest path from entrypoint to id
-; Decrypt the private key on entrypoint with the secret
-; Use the private key to decrypt the chain of private keys
-; Return the decrypted private key of node with id
+(def conn (nc/connect "http://localhost:7474/db/data" "neo4j" "test")) ; Move this to config
+
+(defn- b64encode
+  "Encodes the incoming byte array as base 64 string"
+  [bytes]
+  (let [encoder (Base64/getEncoder)]
+    (.encodeToString encoder bytes)))
+
+(defn- b64decode
+  "Decodes the incoming base64 string as a byte array"
+  [b64string]
+  (let [decoder (Base64/getDecoder)]
+    (.decode decoder b64string)))
 
 (defn add-entrypoint
   "Adds an entrypoint node to the graph. Returns the node, or an error"
-  [secret]
-  (doto [(KeysetHandle/generateNew HybridKeyTemplates/ECIES_P256_HKDF_HMAC_SHA256_AES128_GCM)
-         ()
-         ]))
-; Derive a key from the secret
-; Generate a key pair
-; Encrypt the private key with the secret
-; Save a node with both the public and encypted private key on it
-; Return the saved thing
+  [password]
+  (let [salt (random/bytes 8) ; move this to config and crypto namespace
+        keypair (generate-key-pair)
+        public-key (:public-key keypair)
+        private-key (:private-key keypair)
+        encrypted-private-key (password-encrypt-key private-key password salt)
+        node (nodes/create conn {:salt (b64encode salt)
+                                 :public-key (b64encode public-key)
+                                 :encrypted-private-key (b64encode encrypted-private-key)})]
+    node))
 
 (defn add-node
   "Adds a non-entrypoint node to the graph. Returns the node, or an error"
@@ -55,15 +62,22 @@
 (defn store
   "Stores some data encrypted on a node. Returns true if the data was stored, or an error"
   [id key value]
-  (errors/not-yet-implemented))
-; Get the public key from id
-; Encrypt the value with the public key
-; Update the node with the new property
+  (let [properties (nodes/get-properties conn id)
+        public-key (b64decode (:public-key properties))
+        encrypted-data (encrypt public-key value)]
+    (nodes/set-property conn id key encrypted-data)))
 
 (defn fetch
-  "Fetches some encrypted data from a node, returns the data, or an error"
-  [id key entrypoint-id secret]
-  (errors/not-yet-implemented))
+  "Fetches some encrypted data from a node, returns the data, or nil if you don't have access"
+  [id key entrypoint-id password]
+  (let [entrypoint-props (nodes/get-properties conn entrypoint-id)
+        salt (b64decode (:salt entrypoint-props))
+        encrypted-private-key (b64decode (:encrypted-private-key entrypoint-props))
+        private-key (password-decrypt-key encrypted-private-key password salt)
+        encrypted-value (b64decode (get (nodes/get-properties conn id) (keyword key)))
+        plaintext-value (decrypt private-key encrypted-value)
+        ]
+    plaintext-value))
 ; Get the private key of node id
 ; Get the encrypted property referred to by key
 ; Decrypt it with the private key

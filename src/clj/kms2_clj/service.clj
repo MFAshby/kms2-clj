@@ -5,7 +5,8 @@
             [crypto.random :as random]
             [clojurewerkz.neocons.rest :as nc]
             [clojurewerkz.neocons.rest.nodes :as nodes]
-            [clojurewerkz.neocons.rest.relationships :as rels])
+            [clojurewerkz.neocons.rest.relationships :as rels]
+            [clojurewerkz.neocons.rest.paths :as paths])
   (:import (java.util Base64)))
 
 (def conn (nc/connect "http://localhost:7474/db/data" "neo4j" "test")) ; Move this to config
@@ -23,20 +24,40 @@
     (.decode decoder b64string)))
 
 (defn- get-public-key
+  "Fetches the public key from a node"
   [node-id]
   (let [properties (nodes/get-properties conn node-id)]
     (b64decode (:public-key properties))))
 
+(defn- get-private-key
+  "Fetches the private key for a node, using the desired entrypoint and password.
+  Returns the desired private key, or nil if there was an error with the password,
+  or if there was no path from the entrypoint"
+  [node-id entrypoint-id password]
+  (let [[entrypoint node] (nodes/get-many conn [entrypoint-id node-id])
+        entrypoint-props (:data entrypoint)
+        encrypted-private-key (b64decode (:encrypted-private-key entrypoint-props))
+        salt (b64decode (:salt entrypoint-props))
+        entrypoint-private-key (password-decrypt-key encrypted-private-key password salt)
+        path (paths/shortest-between conn node entrypoint-id)
+        relationship-urls (:relationships path)]
+    (reduce (fn [prev-pk relationship-url]
+              (let [relationship (rels/fetch-from conn relationship-url)
+                    encrypted-private-key (b64decode (:encrypted-private-key (:data relationship)))]
+                (key-decrypt-key encrypted-private-key prev-pk)))
+            entrypoint-private-key
+            relationship-urls)))
+
 (defn add-entrypoint
-  "Adds an entrypoint node to the graph. Returns the node, or an error"
+  "Adds an entrypoint node to the graph. Returns the node"
   [password]
-  (let [salt (random/bytes 8) ; move this to config and crypto namespace
+  (let [salt (random/bytes 8)                               ; move this to config and crypto namespace
         keypair (generate-key-pair)
         public-key (:public-key keypair)
         private-key (:private-key keypair)
         encrypted-private-key (password-encrypt-key private-key password salt)
-        node (nodes/create conn {:salt (b64encode salt)
-                                 :public-key (b64encode public-key)
+        node (nodes/create conn {:salt                  (b64encode salt)
+                                 :public-key            (b64encode public-key)
                                  :encrypted-private-key (b64encode encrypted-private-key)})]
     node))
 
@@ -77,17 +98,10 @@
 (defn fetch
   "Fetches some encrypted data from a node, returns the data, or nil if you don't have access"
   [id key entrypoint-id password]
-  (let [entrypoint-props (nodes/get-properties conn entrypoint-id)
-        salt (b64decode (:salt entrypoint-props))
-        encrypted-private-key (b64decode (:encrypted-private-key entrypoint-props))
-        private-key (password-decrypt-key encrypted-private-key password salt)
+  (let [private-key (get-private-key id entrypoint-id password)
         encrypted-value (b64decode (get (nodes/get-properties conn id) (keyword key)))
-        plaintext-value (decrypt private-key encrypted-value)
-        ]
+        plaintext-value (decrypt private-key encrypted-value)]
     plaintext-value))
-; Get the private key of node id
-; Get the encrypted property referred to by key
-; Decrypt it with the private key
 
 (defn unstore
   "Removes some encrypted data from a node. Returns true if the data was removed, or an error"

@@ -14,14 +14,16 @@
 (defn- b64encode
   "Encodes the incoming byte array as base 64 string"
   [bytes]
-  (let [encoder (Base64/getEncoder)]
-    (.encodeToString encoder bytes)))
+  (if bytes
+    (let [encoder (Base64/getEncoder)]
+      (.encodeToString encoder bytes))))
 
 (defn- b64decode
   "Decodes the incoming base64 string as a byte array"
   [b64string]
-  (let [decoder (Base64/getDecoder)]
-    (.decode decoder b64string)))
+  (if b64string
+    (let [decoder (Base64/getDecoder)]
+      (.decode decoder b64string))))
 
 (defn- get-public-key
   "Fetches the public key from a node"
@@ -72,45 +74,57 @@
         encrypted-private-key (key-encrypt-key private-key parent-public-key)
         new-node (nodes/create conn {:public-key (b64encode public-key)})
         new-rel (rels/create conn parent new-node "can-decrypt" {:encrypted-private-key (b64encode encrypted-private-key)})]
-    new-node))
+    (if (and (map some? [new-node new-rel]))                ; Check both got created before returning a success value
+      new-node)))
 
 (defn grant-access
-  "Grants access to an existing node. Returns true if access was granted, or an error"
-  [id new-parent-id entrypoint-id secret]
-  (errors/not-yet-implemented))
-; Get the private key of id
-; Get the public key of new-parent-id
-; Encrypt the private key of id with the public key of
+  "Grants access to an existing node. Returns true if access was granted."
+  [id new-parent-id entrypoint-id password]
+  (let [[node new-parent] (nodes/get-many conn [id new-parent-id])
+        target-private-key (get-private-key id entrypoint-id password)
+        new-parent-public-key (get-public-key new-parent-id)
+        encrypted-private-key (key-encrypt-key target-private-key new-parent-public-key)
+        new-rel (rels/create conn new-parent node "can-decrypt" {:encrypted-private-key (b64encode encrypted-private-key)})]
+    (some? new-rel)))
 
 (defn ungrant-access
   "Removes access to an existing node. Returns true if access was un-granted"
   [id parent-id]
-  (errors/not-yet-implemented))
-; Remove the relationship between parent-id and id
+  (let [[node parent] (nodes/get-many conn [id parent-id])
+        relationships (rels/all-outgoing-between conn parent node nil)
+        relationship-ids (map :id relationships)]
+    (rels/delete-many conn relationship-ids)
+    true))
 
 (defn store
-  "Stores some data encrypted on a node. Returns true if the data was stored, or an error"
+  "Stores some data encrypted on a node. Returns true if the data was stored"
   [id key value]
   (let [public-key (get-public-key id)
-        encrypted-data (encrypt public-key value)]
-    (nodes/set-property conn id key encrypted-data)))
+        encrypted-data (encrypt public-key value)
+        set-result (nodes/set-property conn id key encrypted-data)]
+    (some? set-result)))
 
 (defn fetch
   "Fetches some encrypted data from a node, returns the data, or nil if you don't have access"
   [id key entrypoint-id password]
   (let [private-key (get-private-key id entrypoint-id password)
-        encrypted-value (b64decode (get (nodes/get-properties conn id) (keyword key)))
-        plaintext-value (decrypt private-key encrypted-value)]
-    plaintext-value))
+        encrypted-value (b64decode (get (nodes/get-properties conn id) (keyword key)))]
+    (if encrypted-value
+      (decrypt private-key encrypted-value))))
 
 (defn unstore
-  "Removes some encrypted data from a node. Returns true if the data was removed, or an error"
+  "Removes some encrypted data from a node. Returns true if the data was removed, or an error
+  This could probably be a lot more efficient"
   [id key]
-  (errors/not-yet-implemented))
-; Removes the property with key from node with id
+  (let [props (nodes/get-properties conn id)
+        _ (nodes/delete-properties conn id)
+        new-props (filter #(not (= (keyword key) (first %))) (seq props))]
+    (doseq [[k v] new-props]
+      (nodes/set-property conn id k v))
+    true))
 
 (defn delete
   "Deletes a node. Returns true if the data was removed, or an error"
   [id]
-  (errors/not-yet-implemented))
+  (clojurewerkz.neocons.rest.cypher/query conn "match (a :id $id) detach delete a" {:id id}))
 ; Deletes the node with id

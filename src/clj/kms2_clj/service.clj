@@ -39,8 +39,8 @@
         encrypted-private-key (b64decode (:encrypted-private-key entrypoint-props))
         salt (b64decode (:salt entrypoint-props))
         entrypoint-private-key (password-decrypt-key encrypted-private-key password salt)
-        path (paths/shortest-between conn node entrypoint-id)
-        relationship-urls (:relationships path)]
+        path (paths/shortest-between conn node entrypoint-id :max-depth 100)
+        relationship-urls (reverse (:relationships path))]
     (reduce (fn [prev-pk relationship-url]
               (let [relationship (rels/fetch-from conn relationship-url)
                     encrypted-private-key (b64decode (:encrypted-private-key (:data relationship)))]

@@ -22,4 +22,14 @@
           store-result (store (:id node) "some-key" some-secret-data)
           fetch-result (fetch (:id node) "some-key" (:id entrypoint) "some-password")]
       (is store-result)
+      (is (Arrays/equals fetch-result some-secret-data))))
+  (testing "Add an entrypoint, then a chain of several linked nodes.
+            Store and fetch some data on the final node"
+    (let [entrypoint (add-entrypoint "some-password")
+          node1 (add-node (:id entrypoint))
+          node2 (add-node (:id node1))
+          node3 (add-node (:id node2))
+          store-result (store (:id node3) "some-key" some-secret-data)
+          fetch-result (fetch (:id node3) "some-key" (:id entrypoint) "some-password")]
+      (is store-result)
       (is (Arrays/equals fetch-result some-secret-data)))))
